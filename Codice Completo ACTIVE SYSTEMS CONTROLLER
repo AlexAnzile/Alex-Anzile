@@ -1,0 +1,104 @@
+#include <genieArduino.h>
+#include <Ethernet2.h>
+#include <utility/w5500.h>
+#include <DueTimer.h>
+#include <EasyMaster.h>
+
+
+
+Genie genie;                  //variabile tipo Genie
+#define RESETLINE 51          //pin di reset dello schermo LCD
+
+//-----------Variabili Globali-----------------------------------------------------------------------------
+
+bool startsystem = 0, stopsystem = 0, reset = 0, SerialEnable = 0;                                    //Variabili di start, stop e reset del sistema   //SerialEnable permette di visualizzare o meno l'onda in uscita nella seriale
+float  frequenza = 0, ampiezza = 0, Tempo_periodo = 0, y = 0, j = 0, l = 0, f = 0;                    //Le variabili y, l, j e f fungono tutte da uscita  //Vengono inizializzate le varibili frequenza ed ampiezza
+unsigned long TimeNow = 0;                                                                            //Variabile che viene utlizzata per il millis
+
+
+//---------------------------------------------------------------------------------------------------------
+
+void InterruptCampionatura()               //Function che permette il funzionamento della comunicazione Ethercat
+{
+  ExchangeMaster();                        //Function della libreria EasyMaster
+}
+
+enum onda {            // enumeratore che viene utilizzato per cambiare tipo di onda
+  SINUSOIDALE,
+  TRIANGOLARE,
+  QUADRA,
+  COSTANTE,
+  NESSUNA
+};
+
+onda scelta = NESSUNA;    //la variabile enum viene inizializzata con NESSUNA (nessun onda selezionata)
+
+
+//----------Function ethercat--------------------
+#include "Debounce.h"
+#include "Ethercat.h"                       //Viene inclusa il file contenente la logica per la comunicazione Ethercat
+#include "Rapporto.h"                       //Viene inclusa il file contenente la logica per la coretta visualizzazione dell'onda in uscita nello schermo LCD
+#include "Seriale.h"                        //Viene inclusa il file contenente la logica per la comunicazione seriale
+#include "Sinusoide.h"                      //Viene inclusa il file contenente la logica dell'onda sinusoidale
+#include "Triangolare.h"                    //Viene inclusa il file contenente la logica dell'onda triangolare
+#include "Rettangolare.h"                   //Viene inclusa il file contenente la logica dell'onda rettangolare
+#include "Costante.h"                       //Viene inclusa il file contenente la logica per il segnale costante 
+#include "LCD.h"                            //Viene inclusa il file contenente la logica dello schermo LCD
+#include "Scelta_Onda.h"                    //Viene inclusa il file contenente la logica per la scelta di un'onda rispetto all'altra
+
+void setup() {
+  Serial.begin(115200);                 //Serial.begin impostata per la seriale di arduino
+
+  //--------------setup schermo LCD------------------
+  Serial1.begin(9600);                 //Serial.begin impostata per lo schermo LCD
+  genie.Begin(Serial1);
+
+  genie.AttachEventHandler(myGenieEventHandler);
+
+  pinMode(STOP, INPUT_PULLUP);
+
+  pinMode(RESETLINE, OUTPUT);         //Viene impostato il pin del reset dello schermo
+  digitalWrite(RESETLINE, 0);         //Lo schermo viene resettato
+  delay(100);                         //Vengono fatti passare 100ms
+  digitalWrite(RESETLINE, 1);         //Lo schermo viene acceso
+
+
+  delay(4000);                        //Vengono fatti passare 4 secondi per permettere allo schermo di sincronizzarsi con l'arduino
+  //-----------------------------------------------
+
+  genie.WriteObject(GENIE_OBJ_FORM, 1, 1);          //Viene impostata la prima pagina come visualizzazione iniziale
+  genie.WriteObject(GENIE_OBJ_IBUTTONE, 35, 1);     //Viene portato attivato il pulsante della scala per l'aumento di 1 unità
+  aumento = 10;                                     //Aumento impostati a 10
+
+  //-----------------Setup motinor seriale--------------------------
+  if (frequenza == 0 && ampiezza == 0) {                                //Se la frequenza e l'ampiezza sono a 0 viene visualizzato il mesagio seguente all'interno della seriale
+    Serial.println("Impostare valore alla frequenza e ampiezza");       //Istruzioni per impostare la frequenza e l'ampiezza da seriale
+    Serial.println("Per la frequenza =>F VALORE_VOLUTO@");
+    Serial.println("Per l'ampiezza =>A VALORE_VOLUTO@");
+  }
+  //----------------------------------------------------------------
+  SendValuesECAT(0);                                                              //Viene impostato il valore 0 all'uscita dell'ethercat
+  InitMaster(8000);                                                               // Viene inizializzata la comunicazione ethercat che andrà a comunicare con le uscite
+  Timer.getAvailable().attachInterrupt(InterruptCampionatura).start(8000);        // Viene inizializzato l'interrupt per la comunicazione tra l'arduino e le uscite
+}
+
+void loop() {
+  TimeNow = millis();       //TimeNow uguale a millis
+  CheckDebugSerial();       //Richiamo della function della comunicazione seriale
+  Rapporto();               //Richiamo della function del rapporto
+  StampaSeriale();          //Richiamo della function della stampa nella seriale
+  ReadButtons();
+  //PulsanteStop();
+  
+  Tempo_periodo = 1 / frequenza * 1000;     //Calcolo del periodo in base alla frequenza
+
+  genie.DoEvents();                         //Viene richiamata la function che gestisce lo schermo LCD touch
+
+  if (stopsystem == true) {      //Se viene stopsystem diventa true allora viene inviato alla comunicazione ethercat e all'abilitazione della comunicazione seriale il valore 0
+    SendValuesECAT(0);
+    SerialEnable = false;
+  }
+
+  SceltaOnda();                 //Richiamo della function per la scelta dell'onda
+
+}
